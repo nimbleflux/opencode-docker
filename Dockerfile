@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilities
     jq \
     findutils \
+    # SSH client
+    openssh-client \
     # Go
     golang-go \
     # Python
@@ -34,6 +36,20 @@ RUN YQ_VERSION=v4.40.5 && \
     esac && \
     curl -L -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${YQ_ARCH}" && \
     chmod +x /usr/local/bin/yq
+
+# Install GitHub CLI (gh)
+RUN GH_VERSION=2.42.1 && \
+    ARCH=$(uname -m) && \
+    case $ARCH in \
+        x86_64) GH_ARCH="amd64" ;; \
+        aarch64) GH_ARCH="arm64" ;; \
+        *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
+    esac && \
+    curl -L -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" && \
+    tar -xzf /tmp/gh.tar.gz -C /tmp && \
+    mv /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh /usr/local/bin/gh && \
+    chmod +x /usr/local/bin/gh && \
+    rm -rf /tmp/gh_${GH_VERSION}_linux_${GH_ARCH} /tmp/gh.tar.gz
 
 # Create non-root user
 RUN groupadd -g 1000 opencode && \
