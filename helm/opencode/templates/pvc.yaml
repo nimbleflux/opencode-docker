@@ -1,5 +1,6 @@
 {{- if .Values.persistence.enabled }}
 {{- if and .Values.persistence.config.enabled (not .Values.persistence.config.existingClaim) }}
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -26,6 +27,7 @@ spec:
 {{- end }}
 
 {{- if and .Values.persistence.data.enabled (not .Values.persistence.data.existingClaim) }}
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -52,6 +54,7 @@ spec:
 {{- end }}
 
 {{- if and .Values.persistence.workspace.enabled (not .Values.persistence.workspace.existingClaim) }}
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
