@@ -2,7 +2,7 @@ apiVersion: v2
 name: opencode
 description: A Helm chart for OpenCode AI coding assistant
 type: application
-version: 0.15.0
+version: 0.15.1
 appVersion: "latest"
 icon: https://opencode.ai/favicon.ico
 keywords:
