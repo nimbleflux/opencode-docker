@@ -59,10 +59,11 @@ RUN groupadd -g 1000 opencode && \
 ARG OPENCODE_VERSION=latest
 
 # Install OpenCode CLI as root, then fix ownership
+# OpenCode v2 is published as @opencode/cli (v1 was opencode-ai)
 RUN if [ "$OPENCODE_VERSION" = "latest" ]; then \
-      npm install -g opencode-ai; \
+      npm install -g @opencode/cli; \
     else \
-      npm install -g opencode-ai@$OPENCODE_VERSION; \
+      npm install -g @opencode/cli@$OPENCODE_VERSION; \
     fi && \
     chown -R opencode:opencode /usr/local/lib/node_modules /usr/local/bin/opencode
 
@@ -96,8 +97,13 @@ EXPOSE 4000
 ENV OPENCODE_HOSTNAME=0.0.0.0
 ENV OPENCODE_PORT=4000
 
+# Built-in health check (Compose overrides this). /health is served unauthenticated; the
+# real status endpoint /api/info requires the server password and is checked by the CI smoke test
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -fsS -o /dev/null http://127.0.0.1:4000/health || exit 1
+
 # Don't switch users here - entrypoint handles it
 WORKDIR /home/opencode/workspace
 
-# Run the OpenCode web server via entrypoint
-ENTRYPOINT ["/usr/local/bin/opencode-entrypoint.sh", "opencode", "web", "--hostname", "0.0.0.0", "--port", "4000"]
+# Run the OpenCode server via entrypoint
+ENTRYPOINT ["/usr/local/bin/opencode-entrypoint.sh", "opencode", "serve", "--hostname", "0.0.0.0", "--port", "4000"]

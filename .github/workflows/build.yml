@@ -15,6 +15,11 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: nimbleflux/opencode-docker
+  # jq filter for `gh release list --json tagName,isPrerelease`: the highest stable vX.Y.Z tag
+  HIGHEST_STABLE_JQ: >-
+    [.[] | select(.isPrerelease == false) | .tagName
+    | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) | ltrimstr("v")]
+    | sort_by(split(".") | map(tonumber)) | last // ""
 
 permissions:
   contents: write
@@ -34,8 +39,10 @@ jobs:
       - name: Get current released version
         id: current_version
         run: |
-          # Get the latest Docker release version (exclude helm- releases)
-          CURRENT_VERSION=$(gh release list --repo ${{ github.repository }} --limit 20 --json tagName --jq '.[].tagName' | grep -v '^helm-' | head -1 | sed 's/^v//' || echo "none")
+          set -o pipefail
+          # Highest released OpenCode version so far (prereleases and non-semver tags are excluded)
+          CURRENT_VERSION=$(gh release list --repo ${{ github.repository }} --limit 100 --json tagName,isPrerelease | jq -r "$HIGHEST_STABLE_JQ")
+          CURRENT_VERSION=${CURRENT_VERSION:-none}
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $CURRENT_VERSION"
         env:
@@ -46,8 +53,10 @@ jobs:
         # Always fetch on schedule/workflow_dispatch, or on push to main
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: |
-          # Get the latest release from OpenCode's GitHub repo
-          LATEST_VERSION=$(gh release view --repo anomalyco/opencode --json tagName --jq '.tagName' | sed 's/^v//')
+          set -o pipefail
+          # Take the highest stable tag rather than the release flagged "Latest": upstream can
+          # keep that flag on an older major (v1.19.6) while publishing newer ones (v2.x) unflagged
+          LATEST_VERSION=$(gh release list --repo anomalyco/opencode --limit 100 --json tagName,isPrerelease | jq -r "$HIGHEST_STABLE_JQ")
           echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
           echo "Latest version: $LATEST_VERSION"
         env:
@@ -130,6 +139,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != 'latest' }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != 'latest' }}
+            type=semver,pattern={{major}},value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.version != 'latest' }}
             type=raw,value=latest
           labels: |
             org.opencontainers.image.title=OpenCode Docker
@@ -137,17 +147,81 @@ jobs:
             org.opencontainers.image.vendor=nimbleflux
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
-      - name: Build and push Docker image
+      - name: Build candidate image
         uses: docker/build-push-action@v7
         with:
           context: .
+          # Pushes go to a candidate tag; the real tags are promoted only after the smoke test passes
+          load: ${{ github.event_name == 'pull_request' }}
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             OPENCODE_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke test candidate image
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          EXPECTED="${{ steps.version.outputs.version }}"
+          # Unpinned builds install npm's `latest`, so that is the version to expect
+          if [ "$EXPECTED" = "latest" ]; then
+            EXPECTED=$(curl -fsSL https://registry.npmjs.org/@opencode%2Fcli/latest | jq -r .version)
+          fi
+          echo "Expected OpenCode version: $EXPECTED"
+
+          ACTUAL=$(docker run --rm --entrypoint opencode "$IMAGE" --version)
+          echo "Installed OpenCode version: $ACTUAL"
+          if [[ "$ACTUAL" != *"$EXPECTED"* ]]; then
+            echo "::error::expected OpenCode $EXPECTED but the image reports '$ACTUAL'"
+            exit 1
+          fi
+
+          # Start through the normal entrypoint and wait until every check holds at once.
+          # /health needs no password but only proves the HTTP server answers, and API routes
+          # can answer 503 for a moment during startup, so also wait for an authenticated call
+          # to succeed and for a call without the password to be rejected
+          URL=http://127.0.0.1:4173
+          docker run -d --name opencode-smoke -p 127.0.0.1:4173:4000 -e OPENCODE_SERVER_PASSWORD=smoke-test "$IMAGE"
+          READY=false
+          for _ in $(seq 1 30); do
+            # `|| true`: a failed request is a code of 000, not a reason to abort the step
+            HEALTH=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$URL/health" || true)
+            INFO=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -u opencode:smoke-test "$URL/api/info" || true)
+            WITH_PW=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' -u opencode:smoke-test "$URL/api/session" || true)
+            NO_PW=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' "$URL/api/session" || true)
+            if [ "$HEALTH$INFO$WITH_PW$NO_PW" = "200200200401" ]; then
+              READY=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$READY" != true ]; then
+            echo "::error::server did not reach the expected state (need /health=200, API with password=200, API without password=401). Got health=$HEALTH info=$INFO with-password=$WITH_PW without-password=$NO_PW. Container logs:"
+            docker logs opencode-smoke
+            exit 1
+          fi
+          echo "Server is ready"
+
+          RUNNING=$(curl -fsS -u opencode:smoke-test "$URL/api/info" | jq -r .version)
+          echo "Running OpenCode version: $RUNNING"
+          if [ "$RUNNING" != "$EXPECTED" ]; then
+            echo "::error::the running server reports '$RUNNING', expected $EXPECTED"
+            exit 1
+          fi
+
+      - name: Remove smoke test container
+        if: always()
+        run: docker rm -f opencode-smoke || true
+
+      - name: Promote tested image
+        if: github.event_name != 'pull_request'
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            docker buildx imagetools create --tag "$tag" "$IMAGE"
+          done
 
   release:
     name: Create GitHub Release
@@ -165,8 +239,9 @@ jobs:
         run: |
           VERSION="${{ needs.check-version.outputs.new_version }}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          # Extract major.minor for additional tags
+          # Extract major and major.minor for additional tags
           IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
+          echo "major=${VERSION_PARTS[0]}" >> $GITHUB_OUTPUT
           echo "major_minor=${VERSION_PARTS[0]}.${VERSION_PARTS[1]}" >> $GITHUB_OUTPUT
 
       - name: Fetch OpenCode release notes
@@ -212,6 +287,7 @@ jobs:
             ### Available Tags
 
             - `${{ steps.version.outputs.version }}` - This specific version
+            - `${{ steps.version.outputs.major }}` - Major version
             - `${{ steps.version.outputs.major_minor }}` - Major.Minor version
             - `latest` - Latest stable release
 
