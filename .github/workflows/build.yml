@@ -217,11 +217,16 @@ jobs:
 
       - name: Promote tested image
         if: github.event_name != 'pull_request'
+        env:
+          # Passed as a variable because the value is multi-line: an inline ${{ }} would be
+          # pasted into the script as several lines and break the loop
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
-          for tag in ${{ steps.meta.outputs.tags }}; do
+          # One tag per line, `latest` last; sort -u drops the duplicate the metadata adds
+          while IFS= read -r tag; do
             docker buildx imagetools create --tag "$tag" "$IMAGE"
-          done
+          done <<< "$(printf '%s\n' "$TAGS" | sort -u)"
 
   release:
     name: Create GitHub Release
