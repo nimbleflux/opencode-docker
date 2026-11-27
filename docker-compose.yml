@@ -5,9 +5,9 @@ services:
     ports:
       - "${OPENCODE_PORT:-4000}:4000"
     environment:
-      # Optional server password for authentication
-      # - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:-}
-      {}
+      # Password for the web UI and API (the username is always `opencode`). If unset, OpenCode
+      # generates a new password on every start and prints it with `docker logs opencode`
+      - OPENCODE_SERVER_PASSWORD=${OPENCODE_SERVER_PASSWORD:-}
     volumes:
       # Persistent configuration (UI config saved here)
       - opencode-config:/home/opencode/.config/opencode

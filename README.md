@@ -4,6 +4,8 @@
 
 This project provides container deployment options for running [OpenCode](https://opencode.ai) as a web service. OpenCode is an AI-powered development environment - this repository makes it easy to run in containerized environments.
 
+The `latest` tag tracks the newest stable OpenCode v2 release. Coming from a 1.x image? See [Upgrading from a 1.x image](#upgrading-from-a-1x-image).
+
 ## What is OpenCode?
 
 OpenCode is an AI coding assistant that provides a terminal-based interface for software development. It supports multiple AI providers (Anthropic, OpenAI, Google, AWS, etc.) and includes tools for file editing, bash commands, and project management.
@@ -52,6 +54,19 @@ helm install opencode ./helm/opencode
 
 ---
 
+## Upgrading from a 1.x image
+
+The `latest` tag now ships OpenCode v2. The `1.19.x` tags still pull the last v1 image, but v1 no longer receives updates here. Before you switch:
+
+- **Read the upstream guide.** [Migrate from V1](https://opencode.ai/docs/migrate-v1) lists every change. The ones most likely to affect a deployment: the server API has new contracts, v1 plugins do not run in v2, and `external_directory` is allowed by default (add an `ask` permission rule to restore the v1 behaviour).
+- **Back up your volumes.** Config and data stay in the same directories and v2 reads v1 config without rewriting it, but keep a copy of your v1 setup until you have checked models, credentials, agents, permissions and MCP servers.
+- **Set a password.** v2 always requires one. Without `OPENCODE_SERVER_PASSWORD` (or `OPENCODE_PASSWORD`) a new password is generated on every start and printed to the container logs.
+- **Pin the tag on Kubernetes.** Set `image.tag` to a specific version (for example `2.4.2`) instead of `latest`, so nodes that cached a 1.x `latest` image with `pullPolicy: IfNotPresent` do not keep running v1.
+
+To roll back, pin `ghcr.io/nimbleflux/opencode-docker:1.19.6` and restore your backup.
+
+---
+
 ## Configuration
 
 **Important:** OpenCode is configured through the web UI after first launch. Your configuration is automatically persisted to the config volume.
@@ -70,16 +85,19 @@ Only a few container-level environment variables are available:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENCODE_PORT` | Port to listen on | `4000` |
-| `OPENCODE_SERVER_PASSWORD` | Optional password for authentication | (none) |
+| `OPENCODE_SERVER_PASSWORD` | Password for the web UI and API (the username is always `opencode`) | generated |
+| `OPENCODE_PASSWORD` | Same password, under the name OpenCode v2 uses | generated |
 
 **Note:** API keys and model configuration are configured through the OpenCode UI, not environment variables.
+
+OpenCode always asks for a password. If neither variable is set, a new password is generated on every start and printed to the container logs (`docker logs opencode`).
 
 ### Docker Compose
 
 Create a `.env` file in the repository root:
 
 ```bash
-# Optional server password
+# Server password (a new one is generated on every start if unset)
 # OPENCODE_SERVER_PASSWORD=your-secure-password
 
 # Custom port (default: 4000)
@@ -328,7 +346,8 @@ For production deployments, implement a backup strategy for persistent data:
 
 1. **Build and Push** (`.github/workflows/build.yml`):
    - Builds and pushes Docker images to GHCR on pushes to `main`
-   - Checks for new OpenCode versions daily
+   - Checks daily for new stable OpenCode versions (highest released `vX.Y.Z` tag)
+   - Smoke-tests each image (version, startup, API authentication) before publishing
    - Creates releases automatically
 
 2. **Helm Chart Publish** (`.github/workflows/helm-publish.yml`):
